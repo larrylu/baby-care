@@ -2,9 +2,12 @@ import streamlit as st
 import pandas as pd
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-# --- 配置文件路径 ---
+# --- 1. 核心配置：定义北京时间 (东八区) ---
+# 无论服务器在哪，都强制使用这个时区
+BJ_TZ = timezone(timedelta(hours=8), 'Beijing')
+
 DATA_FILE = 'family_data.json'
 
 # --- 预设的待办事项模版 ---
@@ -28,6 +31,20 @@ TEMPLATE_TASKS = [
     {"id": 105, "category": "mom", "task": "【检查】产后42天检查", "offset_hours": 1008, "desc": "盆底肌、腹直肌、子宫复旧情况检查"},
 ]
 
+# --- 辅助工具：秒级时间格式化 ---
+def format_timedelta(td):
+    """将 timedelta 转换为 D天 H时 M分 S秒"""
+    total_seconds = int(td.total_seconds())
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{days}天 {hours}小时 {minutes}分 {seconds}秒"
+
+def get_current_bj_time():
+    """获取当前的北京时间"""
+    return datetime.now(BJ_TZ)
+
 # --- 数据读写 ---
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -42,7 +59,7 @@ def save_data(data):
 # --- 页面配置 ---
 st.set_page_config(page_title="家庭新生儿管家", page_icon="🏠", layout="centered")
 
-# --- 渲染单个卡片 ---
+# --- 组件：渲染单个任务卡片 ---
 def render_task_card(task_item, current_time, data, tab_key_prefix):
     task_meta = task_item["meta"]
     due_time = task_item["due_time"]
@@ -51,16 +68,15 @@ def render_task_card(task_item, current_time, data, tab_key_prefix):
     task_id = str(task_meta["id"])
 
     with st.container():
-        # 标题栏
         icon = "👶" if task_meta["category"] == "baby" else "👩"
         
-        # 动态计算剩余时间颜色
+        # 样式逻辑
         if is_overdue:
             st.error(f"{icon} **{task_meta['task']}**")
             st.caption(f"🔴 {status_str}")
         else:
-            # 如果剩余时间小于12小时，用橙色提醒，否则蓝色
             time_left = due_time - current_time
+            # 小于12小时显示橙色
             if time_left.total_seconds() < 12 * 3600:
                  st.warning(f"{icon} **{task_meta['task']}**")
                  st.caption(f"🟠 {status_str}")
@@ -71,15 +87,14 @@ def render_task_card(task_item, current_time, data, tab_key_prefix):
         col1, col2 = st.columns([3, 1.2])
         with col1:
             st.text(f"说明: {task_meta['desc']}")
-            st.text(f"截止: {due_time.strftime('%m-%d %H:%M')}")
-            # 备注框
+            # 这里的截止时间也显示到秒，明确时间点
+            st.text(f"截止: {due_time.strftime('%m-%d %H:%M:%S')}")
             note_key = f"note_{tab_key_prefix}_{task_id}"
-            note = st.text_input("备注", key=note_key, placeholder="情况记录...")
+            note = st.text_input("备注", key=note_key, placeholder="记录数值或情况...")
             
         with col2:
             st.write("")
             st.write("")
-            # 完成按钮
             btn_key = f"btn_{tab_key_prefix}_{task_id}"
             if st.button("✅ 完成", key=btn_key, use_container_width=True):
                 data["tasks"][task_id] = {
@@ -92,24 +107,26 @@ def render_task_card(task_item, current_time, data, tab_key_prefix):
                 st.rerun()
         st.divider()
 
-# --- 核心动态渲染区 (关键修改点) ---
-# run_every=60 表示每60秒自动刷新这个函数内部的内容
-@st.fragment(run_every=60)
+# --- 核心：秒级自动刷新仪表盘 ---
+# run_every=1 代表每秒刷新一次，实现秒表跳动效果
+@st.fragment(run_every=1)
 def render_live_dashboard():
     data = load_data()
     
-    # 如果没设置时间，不显示仪表盘，返回False让主程序处理
     if not data["birth_time"]:
-        return False
+        return False # 没数据，交给主函数显示初始化界面
 
-    birth_time = datetime.strptime(data["birth_time"], "%Y-%m-%d %H:%M:%S")
-    now = datetime.now()
+    # 1. 统一时间基准：所有字符串转回北京时间对象
+    birth_time_str = data["birth_time"]
+    # 解析字符串，并强制指定为北京时间
+    birth_time = datetime.strptime(birth_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJ_TZ)
+    now = get_current_bj_time()
     
-    # 1. 实时更新的宝宝年龄
+    # 2. 实时年龄 (精确到秒)
     age_delta = now - birth_time
-    st.success(f"📅 宝宝已出生: **{age_delta.days}天 {age_delta.seconds//3600}小时** (当前时间: {now.strftime('%H:%M')})")
+    st.success(f"📅 宝宝已出生: **{format_timedelta(age_delta)}**\n\n(北京时间: {now.strftime('%H:%M:%S')})")
 
-    # 2. 实时计算任务状态
+    # 3. 任务计算
     pending_tasks_all = []
     
     for task in TEMPLATE_TASKS:
@@ -120,12 +137,15 @@ def render_live_dashboard():
             
         due_time = birth_time + timedelta(hours=task["offset_hours"])
         is_overdue = now > due_time
-        time_diff = due_time - now
+        time_diff = due_time - now if not is_overdue else now - due_time
+        
+        # 格式化时间字符串
+        time_str = format_timedelta(time_diff)
         
         if is_overdue:
-            status_str = f"已超期 {abs(time_diff.days)}天 {abs(time_diff.seconds)//3600}小时 {abs(time_diff.seconds)%3600//60}分"
+            status_str = f"已超期 {time_str}"
         else:
-            status_str = f"剩余 {time_diff.days}天 {time_diff.seconds//3600}小时 {time_diff.seconds%3600//60}分"
+            status_str = f"剩余 {time_str}"
             
         pending_tasks_all.append({
             "meta": task,
@@ -138,36 +158,30 @@ def render_live_dashboard():
     pending_baby = [t for t in pending_tasks_all if t["meta"]["category"] == "baby"]
     pending_mom = [t for t in pending_tasks_all if t["meta"]["category"] == "mom"]
 
-    # 3. Tabs 展示
-    tab_home, tab_baby, tab_mom, tab_history = st.tabs(["🏠 待办总览", "👶 宝宝待办", "👩 妈妈待办", "📜 历史记录"])
+    # 4. Tabs 界面
+    tab_home, tab_baby, tab_mom, tab_history, tab_settings = st.tabs(["🏠 总览", "👶 宝宝", "👩 妈妈", "📜 记录", "⚙️ 设置"])
 
     with tab_home:
         if not pending_tasks_all:
-            st.info("🎉 目前没有任何待办事项！")
+            st.info("🎉 无待办事项")
         else:
             for item in pending_tasks_all:
                 render_task_card(item, now, data, "home")
 
     with tab_baby:
-        if not pending_baby:
-            st.info("宝宝任务已全部完成")
+        if not pending_baby: st.info("宝宝任务完成")
         else:
-            for item in pending_baby:
-                render_task_card(item, now, data, "baby")
+            for item in pending_baby: render_task_card(item, now, data, "baby")
 
     with tab_mom:
-        if not pending_mom:
-            st.info("妈妈任务已全部完成")
+        if not pending_mom: st.info("妈妈任务完成")
         else:
-            for item in pending_mom:
-                render_task_card(item, now, data, "mom")
+            for item in pending_mom: render_task_card(item, now, data, "mom")
 
     with tab_history:
-        # 历史记录不需要实时刷新，但为了放在Tab里，只能写在这里
-        # 或者可以将历史记录移出 fragment，但那样布局会断裂
-        if st.button("🔄 刷新历史记录"):
-            pass # 按钮本身会触发刷新
-            
+        # 添加手动刷新按钮，因为 fragment 可能会缓存表格状态
+        if st.button("🔄 刷新表格"): pass
+
         completed_list = []
         for t_id, record in data["tasks"].items():
             if record["status"] == "done":
@@ -176,7 +190,7 @@ def render_live_dashboard():
                     completed_list.append({
                         "对象": orig_task["category"],
                         "任务": orig_task["task"],
-                        "完成时间": record["done_at"][5:-3],
+                        "完成时间": record["done_at"], # 这里已经是秒级字符串了
                         "备注": record.get("note", "")
                     })
         if completed_list:
@@ -184,28 +198,63 @@ def render_live_dashboard():
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.caption("暂无记录")
-    
+
+    # --- 3. 清空数据二次确认逻辑 (在设置 Tab 中) ---
+    with tab_settings:
+        st.write("### 数据管理")
+        st.info(f"当前出生时间设定: {birth_time_str}")
+        
+        # 使用 session_state 管理确认状态
+        if 'confirm_delete_step' not in st.session_state:
+            st.session_state['confirm_delete_step'] = False
+
+        if not st.session_state['confirm_delete_step']:
+            # 第一步：点击清空按钮
+            if st.button("🗑️ 清空所有数据"):
+                st.session_state['confirm_delete_step'] = True
+                st.rerun() # 重新运行以显示警告
+        else:
+            # 第二步：显示警告和确认/取消
+            st.warning("⚠️ 警告：此操作将永久删除所有出生信息和打卡记录，不可恢复！")
+            col_yes, col_no = st.columns(2)
+            with col_yes:
+                if st.button("✅ 确认删除", type="primary"):
+                    if os.path.exists(DATA_FILE):
+                        os.remove(DATA_FILE)
+                    # 重置状态
+                    st.session_state['confirm_delete_step'] = False
+                    st.success("数据已清空，正在重置...")
+                    st.rerun()
+            with col_no:
+                if st.button("❌ 取消"):
+                    st.session_state['confirm_delete_step'] = False
+                    st.rerun()
+
     return True
 
-# --- 主入口 ---
+# --- 主程序入口 ---
 def main():
     st.title("🏠 新生儿家庭任务管家")
     
-    # 尝试加载数据判断是否需要显示“初始化界面”
     data = load_data()
     
     if not data["birth_time"]:
         st.warning("👋 请先设置宝宝出生时间")
+        
+        # 获取当前北京时间作为默认值
+        now_bj = get_current_bj_time()
+        
         col1, col2 = st.columns(2)
-        d = col1.date_input("出生日期", value=datetime.now())
-        t = col2.time_input("出生时间", value=datetime.now())
-        if st.button("🚀 启动"):
-            birth_dt = datetime.combine(d, t)
+        d = col1.date_input("出生日期", value=now_bj)
+        t = col2.time_input("出生时间", value=now_bj) # 默认显示当前北京时间
+        
+        if st.button("🚀 启动 (以北京时间记录)"):
+            # 组合日期和时间，并附加时区信息
+            birth_dt = datetime.combine(d, t).replace(tzinfo=BJ_TZ)
             data["birth_time"] = birth_dt.strftime("%Y-%m-%d %H:%M:%S")
             save_data(data)
             st.rerun()
     else:
-        # 调用自动刷新的片段
         render_live_dashboard()
 
 if __name__ == "__main__":
