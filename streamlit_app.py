@@ -6,7 +6,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-# --- 尝试导入 Cookie 管理库 ---
+# --- 尝试导入 Cookie 管理库 (保持登录态功能) ---
 try:
     import extra_streamlit_components as stx
     HAS_COOKIE_LIB = True
@@ -16,7 +16,7 @@ except ImportError:
 # --- 1. 基础配置 & 常量 ---
 BJ_TZ = timezone(timedelta(hours=8), 'Beijing')
 USERS_FILE = 'app_users.json'
-SESSIONS_FILE = 'app_sessions.json' # 新增：存储登录会话
+SESSIONS_FILE = 'app_sessions.json'
 
 # 系统预设模版
 DEFAULT_TEMPLATE = [
@@ -80,25 +80,19 @@ def verify_credentials(username, password):
     return users.get(username) == password
 
 def create_session(username):
-    """创建会话Token并保存"""
     token = str(uuid.uuid4())
     init_system_files()
     with open(SESSIONS_FILE, 'r') as f: sessions = json.load(f)
-    
-    # 清理该用户旧的session
     sessions = {k: v for k, v in sessions.items() if v != username}
-    
-    # 添加新session (有效期30天)
     sessions[token] = username
     with open(SESSIONS_FILE, 'w') as f: json.dump(sessions, f)
     return token
 
 def verify_session(token):
-    """验证Token有效性"""
     if not token: return None
     init_system_files()
     with open(SESSIONS_FILE, 'r') as f: sessions = json.load(f)
-    return sessions.get(token) # 返回用户名或None
+    return sessions.get(token)
 
 def delete_session(token):
     if not token: return
@@ -139,13 +133,9 @@ def render_login_page(cookie_manager):
             if verify_credentials(username, password):
                 st.session_state['logged_in'] = True
                 st.session_state['username'] = username
-                
-                # 设置自动登录 Cookie
                 if cookie_manager:
                     token = create_session(username)
-                    # Cookie 有效期 30 天
                     cookie_manager.set('baby_auth_token', token, expires_at=datetime.now() + timedelta(days=30))
-                
                 st.success("登录成功！")
                 st.rerun()
             else:
@@ -163,6 +153,7 @@ def render_login_page(cookie_manager):
             else:
                 st.warning("请输入账号和密码")
 
+# 【重点修改】优化后的卡片渲染函数
 def render_task_card(task_item, current_time, user_data, username, loc_suffix):
     task_meta = task_item["meta"]
     due_time = task_item["due_time"]
@@ -170,20 +161,36 @@ def render_task_card(task_item, current_time, user_data, username, loc_suffix):
     status_str = task_item["status_str"]
     task_id = str(task_meta["id"])
 
-    with st.container():
-        col_icon, col_content, col_action = st.columns([0.5, 3.5, 1.2])
-        with col_icon:
-            st.markdown(f"### {'👶' if task_meta['category'] == 'baby' else '👩'}")
+    # 使用带边框的容器，视觉更像一个卡片
+    with st.container(border=True):
+        # 调整布局比例：左侧信息区占大部分，右侧按钮区占小部分
+        col_content, col_action = st.columns([3.5, 1])
+        
         with col_content:
+            # 1. 图标和标题合并在一行
+            icon = '👶' if task_meta['category'] == 'baby' else '👩'
             title_color = "red" if is_overdue else ("orange" if (due_time - current_time).total_seconds() < 12*3600 else "blue")
-            st.markdown(f":{title_color}[**{task_meta['task']}**]")
-            st.caption(f"{'🔴' if is_overdue else '🟢'} {status_str} | 截止: {due_time.strftime('%m-%d %H:%M:%S')}")
-            st.text(f"说明: {task_meta['desc']}")
+            
+            # 使用 Markdown 实现图标+标题同传，并调整字体大小
+            st.markdown(f"**{icon} :{title_color}[{task_meta['task']}]**")
+            
+            # 2. 信息行 (状态图标 + 状态文字 + 截止时间)
+            status_icon = '🔴' if is_overdue else '🟢'
+            st.caption(f"{status_icon} {status_str} | 截止: {due_time.strftime('%m-%d %H:%M')}")
+            
+            # 3. 说明文字
+            if task_meta['desc']:
+                st.caption(f"💡 {task_meta['desc']}")
+            
+            # 4. 备注输入框 (紧凑显示)
             note_key = f"note_{task_id}_{loc_suffix}"
-            note = st.text_input("备注", key=note_key, placeholder="记录...", label_visibility="collapsed")
+            note = st.text_input("备注", key=note_key, placeholder="在此输入数值或情况...", label_visibility="collapsed")
+
         with col_action:
-            st.write("")
+            # 按钮区域
+            st.write("") # 占位符，稍微向下挤一点
             btn_key = f"btn_{task_id}_{loc_suffix}"
+            # 按钮文字精简为“完成”，适应手机宽度
             if st.button("✅ 完成", key=btn_key):
                 user_data["tasks"][task_id] = {
                     "status": "done",
@@ -193,7 +200,6 @@ def render_task_card(task_item, current_time, user_data, username, loc_suffix):
                 save_user_data(username, user_data)
                 st.toast(f"{task_meta['task']} 已归档！")
                 st.rerun()
-        st.markdown("---")
 
 # 视图 A: 顶部时钟
 @st.fragment(run_every=1)
@@ -321,80 +327,4 @@ def render_settings_view(username, user_data):
                     user_data["tasks"] = {}
                     user_data["custom_templates"] = []
                     save_user_data(username, user_data)
-                    st.session_state.confirm_delete = False
-                    st.success("重置成功")
-                    st.rerun()
-            with col_n:
-                if st.button("❌ 取消"):
-                    st.session_state.confirm_delete = False
-                    st.rerun()
-
-# --- 5. 主程序逻辑 ---
-def main():
-    # 初始化 Cookie 管理器
-    cookie_manager = get_cookie_manager()
-    
-    # 尝试自动登录逻辑 (Token 校验)
-    if 'logged_in' not in st.session_state:
-        st.session_state['logged_in'] = False
-        
-        # 如果还没登录，且安装了Cookie库，尝试获取Token
-        if cookie_manager:
-            # 获取所有cookies
-            cookies = cookie_manager.get_all()
-            token = cookies.get('baby_auth_token')
-            if token:
-                # 校验Token
-                cached_user = verify_session(token)
-                if cached_user:
-                    st.session_state['logged_in'] = True
-                    st.session_state['username'] = cached_user
-                    # 避免界面闪烁，稍微停顿
-                    time.sleep(0.1)
-
-    # 渲染登录页
-    if not st.session_state['logged_in']:
-        render_login_page(cookie_manager)
-        return
-
-    # --- 已登录 ---
-    username = st.session_state['username']
-    user_data = load_user_data(username)
-
-    with st.sidebar:
-        st.write(f"👋 你好, **{username}**")
-        selected_view = st.radio("功能导航", ["📌 任务看板", "📜 历史记录", "⚙️ 任务管理"], index=0)
-        st.divider()
-        if st.button("🚪 退出登录"):
-            # 清除 Session 和 Cookie
-            st.session_state['logged_in'] = False
-            if cookie_manager:
-                token = cookie_manager.get('baby_auth_token')
-                delete_session(token)
-                cookie_manager.delete('baby_auth_token')
-            st.rerun()
-
-    if not user_data["birth_time"]:
-        st.warning(f"欢迎新用户，请先设置宝宝出生时间")
-        now_bj = get_bj_time()
-        col1, col2 = st.columns(2)
-        d = col1.date_input("出生日期", value=now_bj)
-        t = col2.time_input("出生时间", value=now_bj)
-        if st.button("🚀 开始记录"):
-            birth_dt = datetime.combine(d, t).replace(tzinfo=BJ_TZ)
-            user_data["birth_time"] = birth_dt.strftime("%Y-%m-%d %H:%M:%S")
-            save_user_data(username, user_data)
-            st.rerun()
-        return
-
-    if selected_view == "📌 任务看板":
-        render_header_clock(username)
-        st.divider()
-        render_task_lists(username)
-    elif selected_view == "📜 历史记录":
-        render_history_view(username, user_data)
-    elif selected_view == "⚙️ 任务管理":
-        render_settings_view(username, user_data)
-
-if __name__ == "__main__":
-    main()
+                    st.session_state
