@@ -125,13 +125,11 @@ def render_task_card(task_item, current_time, user_data, username, loc_suffix):
     task_id = str(task_meta["id"])
 
     with st.container():
-        col_icon, col_content, col_action = st.columns([0.5, 3.5, 1.2])
+        col_content, col_action = st.columns([3.5, 1.2])
         
-        with col_icon:
-            st.markdown(f"### {'👶' if task_meta['category'] == 'baby' else '👩'}")
-            
         with col_content:
             title_color = "red" if is_overdue else ("orange" if (due_time - current_time).total_seconds() < 12*3600 else "blue")
+            st.markdown(f"### {'👶' if task_meta['category'] == 'baby' else '👩'}")
             st.markdown(f":{title_color}[**{task_meta['task']}**]")
             st.caption(f"{'🔴' if is_overdue else '🟢'} {status_str} | 截止: {due_time.strftime('%m-%d %H:%M:%S')}")
             st.text(f"说明: {task_meta['desc']}")
