@@ -53,51 +53,77 @@ def get_bj_time():
 def get_user_data_file(username):
     return f"data_{username}.json"
 
-# --- 3. 八字五行计算核心逻辑 ---
+# --- 3. 八字五行计算核心逻辑 (修复版) ---
 def calculate_bazi_info(birth_datetime):
     if not HAS_LUNAR_LIB:
         return None
     
-    # 将 datetime 转为 Solar 对象
-    solar = Solar.fromYmdHms(
-        birth_datetime.year, 
-        birth_datetime.month, 
-        birth_datetime.day, 
-        birth_datetime.hour, 
-        birth_datetime.minute, 
-        birth_datetime.second
-    )
-    lunar = solar.getLunar()
-    
-    # 获取八字 (天干地支)
-    bazi_list = lunar.getBaZi() # ['甲辰', '丙寅'...]
-    
-    # 获取八字的五行属性 (例如: YearGanWuXing='木')
-    # 顺序：年干, 年支, 月干, 月支, 日干, 日支, 时干, 时支
-    wuxing_elements = [
-        lunar.getYearGanWuXing(), lunar.getYearZhiWuXing(),
-        lunar.getMonthGanWuXing(), lunar.getMonthZhiWuXing(),
-        lunar.getDayGanWuXing(), lunar.getDayZhiWuXing(),
-        lunar.getTimeGanWuXing(), lunar.getTimeZhiWuXing()
-    ]
-    
-    # 统计五行数量
-    counts = {"金": 0, "木": 0, "水": 0, "火": 0, "土": 0}
-    for w in wuxing_elements:
-        if w in counts:
-            counts[w] += 1
-            
-    # 找出缺少的五行
-    missing = [k for k, v in counts.items() if v == 0]
-    
-    return {
-        "lunar_str": f"{lunar.getYearInGanZhi()}年 {lunar.getMonthInGanZhi()}月 {lunar.getDayInGanZhi()}日 {lunar.getTimeZhi()}时",
-        "bazi": bazi_list, # [年柱, 月柱, 日柱, 时柱]
-        "wuxing_list": wuxing_elements,
-        "counts": counts,
-        "missing": missing,
-        "animal": lunar.getYearShengXiao() # 生肖
-    }
+    try:
+        # 1. 基础转换
+        solar = Solar.fromYmdHms(
+            birth_datetime.year, 
+            birth_datetime.month, 
+            birth_datetime.day, 
+            birth_datetime.hour, 
+            birth_datetime.minute, 
+            birth_datetime.second
+        )
+        lunar = solar.getLunar()
+
+        # 2. 定义映射字典 (最稳妥的方式，防止库版本差异)
+        # 天干对应五行
+        GAN_MAP = {
+            '甲': '木', '乙': '木',
+            '丙': '火', '丁': '火',
+            '戊': '土', '己': '土',
+            '庚': '金', '辛': '金',
+            '壬': '水', '癸': '水'
+        }
+        # 地支对应五行
+        ZHI_MAP = {
+            '子': '水', '亥': '水',
+            '寅': '木', '卯': '木',
+            '巳': '火', '午': '火',
+            '申': '金', '酉': '金',
+            '辰': '土', '戌': '土', '丑': '土', '未': '土'
+        }
+
+        # 3. 获取八字字符
+        yg, yz = lunar.getYearGan(), lunar.getYearZhi()
+        mg, mz = lunar.getMonthGan(), lunar.getMonthZhi()
+        dg, dz = lunar.getDayGan(), lunar.getDayZhi()
+        tg, tz = lunar.getTimeGan(), lunar.getTimeZhi()
+
+        bazi_list = [f"{yg}{yz}", f"{mg}{mz}", f"{dg}{dz}", f"{tg}{tz}"]
+
+        # 4. 映射五行
+        wuxing_elements = [
+            GAN_MAP.get(yg, '?'), ZHI_MAP.get(yz, '?'),
+            GAN_MAP.get(mg, '?'), ZHI_MAP.get(mz, '?'),
+            GAN_MAP.get(dg, '?'), ZHI_MAP.get(dz, '?'),
+            GAN_MAP.get(tg, '?'), ZHI_MAP.get(tz, '?')
+        ]
+
+        # 5. 统计
+        counts = {"金": 0, "木": 0, "水": 0, "火": 0, "土": 0}
+        for w in wuxing_elements:
+            if w in counts:
+                counts[w] += 1
+                
+        missing = [k for k, v in counts.items() if v == 0]
+        
+        return {
+            "lunar_str": f"{lunar.getYearInGanZhi()}年 {lunar.getMonthInGanZhi()}月 {lunar.getDayInGanZhi()}日 {lunar.getTimeZhi()}时",
+            "bazi": bazi_list,
+            "wuxing_list": wuxing_elements,
+            "counts": counts,
+            "missing": missing,
+            "animal": lunar.getYearShengXiao()
+        }
+    except Exception as e:
+        # 防止计算错误导致整个APP崩溃，只打印错误到后台
+        print(f"Bazi Error: {e}")
+        return None
 
 # --- 4. 账号与数据管理系统 ---
 def init_user_system():
@@ -195,7 +221,7 @@ def render_task_card(task_item, current_time, user_data, username, loc_suffix):
                 st.toast(f"{task_meta['task']} 已归档！")
                 st.rerun()
 
-# 视图 A: 顶部时钟 + 八字五行 (每1秒刷新)
+# 视图 A: 顶部时钟 + 八字 (每1秒刷新)
 @st.fragment(run_every=1)
 def render_header_clock(username):
     user_data = load_user_data(username)
@@ -214,25 +240,21 @@ def render_header_clock(username):
         else:
             info = calculate_bazi_info(birth_time)
             if info:
-                # 1. 八字展示
                 st.markdown(f"**☯️ 生肖**: {info['animal']} | **农历**: {info['lunar_str']}")
                 
                 c1, c2, c3, c4 = st.columns(4)
-                cols = [c1, c2, c3, c4]
                 titles = ["年柱 (父母)", "月柱 (兄弟)", "日柱 (命主)", "时柱 (子女)"]
                 
                 for i in range(4):
                     gan_wuxing = info['wuxing_list'][i*2]
                     zhi_wuxing = info['wuxing_list'][i*2+1]
                     gan_zhi = info['bazi'][i]
-                    with cols[i]:
+                    with [c1, c2, c3, c4][i]:
                         st.caption(titles[i])
                         st.markdown(f"#### {gan_zhi}")
                         st.text(f"{gan_wuxing} / {zhi_wuxing}")
 
                 st.divider()
-                
-                # 2. 五行统计
                 st.write("**🌀 五行强弱统计**:")
                 wc1, wc2, wc3, wc4, wc5 = st.columns(5)
                 w_map = [("金", "🪙"), ("木", "🌲"), ("水", "💧"), ("火", "🔥"), ("土", "⛰️")]
@@ -242,11 +264,12 @@ def render_header_clock(username):
                     with [wc1, wc2, wc3, wc4, wc5][idx]:
                         st.metric(f"{icon} {element}", count)
                 
-                # 3. 缺失提醒
                 if info['missing']:
                     st.error(f"⚠️ **五行缺**: {'、'.join(info['missing'])}")
                 else:
                     st.success("✅ **五行俱全**，平衡安康！")
+            else:
+                st.caption("计算服务暂时不可用或出生时间格式有误。")
 
 # 视图 B: 任务列表
 @st.fragment(run_every=60)
